@@ -1,0 +1,81 @@
+name: Android CI
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - release
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, 'ci skip')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+      - name: Decode Keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > /tmp/key.jks
+      - name: Build with Gradle
+        env:
+          SIGN_KEY_STORE_FILE: "/tmp/key.jks"
+          SIGN_KEY_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          SIGN_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          SIGN_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          ./gradlew bundleRelease
+      - name: Install dependencies
+        run: sudo apt-get install wget unzip -y
+      - name: Process Artifacts
+        id: apk
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          # Download bundletool
+          wget -q -O /tmp/bundletool.jar https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar
+          
+          # Define paths
+          BUNDLE_DIR="app/build/outputs/bundle/release"
+          AAB_FILE=$(ls $BUNDLE_DIR/*.aab | head -n 1)
+          AAB_FILENAME=$(basename $AAB_FILE)
+          
+          # Extract version info
+          versionName=$(java -jar /tmp/bundletool.jar dump manifest --bundle $AAB_FILE --xpath /manifest/@android:versionName)
+          echo "Version Name: $versionName"
+          
+          # Generate Universal APK
+          echo "Generating Universal APK..."
+          java -jar /tmp/bundletool.jar build-apks \
+            --bundle=$AAB_FILE \
+            --output=universal.apks \
+            --mode=universal \
+            --ks=/tmp/key.jks \
+            --ks-pass=pass:$KEYSTORE_PASSWORD \
+            --ks-key-alias=$KEY_ALIAS \
+            --key-pass=pass:$KEY_PASSWORD
+          
+          unzip -p universal.apks universal.apk > NowbarMeter-$versionName-universal.apk
+          
+          # Export variables
+          echo "versionName=$versionName" >> $GITHUB_ENV
+          echo "aabFile=$AAB_FILE" >> $GITHUB_ENV
+          echo "universalApk=NowbarMeter-$versionName-universal.apk" >> $GITHUB_ENV
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.versionName }}
+          body_path: CHANGELOG.md
+          files: |
+            ${{ env.aabFile }}
+            ${{ env.universalApk }}
