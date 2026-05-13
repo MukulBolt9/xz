@@ -1,0 +1,99 @@
+name: Android CI
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'          # Only trigger on version tags like v1.0, v1.2, v2.0
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Decode Keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > /tmp/key.jks
+
+      - name: Build with Gradle
+        env:
+          SIGN_KEY_STORE_FILE: "/tmp/key.jks"
+          SIGN_KEY_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          SIGN_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          SIGN_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          ./gradlew bundleRelease
+
+      - name: Install dependencies
+        run: sudo apt-get install wget unzip -y
+
+      - name: Process Artifacts
+        id: apk
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          wget -q -O /tmp/bundletool.jar \
+          https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar
+          BUNDLE_DIR="app/build/outputs/bundle/release"
+          AAB_FILE=$(ls $BUNDLE_DIR/*.aab | head -n 1)
+          versionName=$(java -jar /tmp/bundletool.jar dump manifest \
+          --bundle $AAB_FILE \
+          --xpath /manifest/@android:versionName)
+          echo "Version Name: $versionName"
+          java -jar /tmp/bundletool.jar build-apks \
+            --bundle=$AAB_FILE \
+            --output=universal.apks \
+            --mode=universal \
+            --ks=/tmp/key.jks \
+            --ks-pass=pass:$KEYSTORE_PASSWORD \
+            --ks-key-alias=$KEY_ALIAS \
+            --key-pass=pass:$KEY_PASSWORD
+          unzip -p universal.apks universal.apk > NowBrief-$versionName-universal.apk
+          echo "versionName=$versionName" >> $GITHUB_ENV
+          echo "aabFile=$AAB_FILE" >> $GITHUB_ENV
+          echo "universalApk=NowBrief-$versionName-universal.apk" >> $GITHUB_ENV
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.versionName }}
+          generate_release_notes: false
+          body: |
+            ## NowBrief v${{ env.versionName }}
+
+            ### Install
+            Download **NowBrief-${{ env.versionName }}-universal.apk** below.
+
+            ### Setup flow
+            1. Tap **Start** (NowBrief card) → allow background/overlay permission → tap **Start** again
+            2. Tap **Start NowBar Meter** → allow notification permission
+            3. Tap **Start** (NowBrief card) one more time → ✅ Now Bar pill appears
+
+            ### What's included
+            - AI-powered daily brief in Samsung Now Bar
+            - Live weather, local news, motivational quotes
+            - Day (warm orange) / Night (ocean blue) themes
+            - Country-aware news in your local language
+          files: |
+            ${{ env.aabFile }}
+            ${{ env.universalApk }}
