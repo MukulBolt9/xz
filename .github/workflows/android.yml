@@ -1,0 +1,206 @@
+name: Android CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Release channel'
+        required: true
+        default: 'stable'
+        type: choice
+        options:
+          - stable
+          - beta
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'        # stable release  →  git tag v2.0 && git push origin v2.0
+      - 'v*-beta*'  # beta release    →  git tag v2.1-beta1 && git push origin v2.1-beta1
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Resolve version + channel from git tag or workflow_dispatch input ──
+      - name: Resolve version and channel
+        id: ver
+        run: |
+          RAW_TAG=$(git tag --points-at HEAD | grep '^v' | sort -V | tail -1)
+
+          if [ -n "$RAW_TAG" ]; then
+            # Tag-triggered build
+            if echo "$RAW_TAG" | grep -q '\-beta'; then
+              CHANNEL="beta"
+            else
+              CHANNEL="stable"
+            fi
+            VERSION="${RAW_TAG#v}"
+            IS_RELEASE=true
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Manual dispatch with channel choice
+            CHANNEL="${{ github.event.inputs.channel }}"
+            DESCRIBED=$(git describe --tags --long --match 'v*' 2>/dev/null || echo "v0.0-0-g$(git rev-parse --short HEAD)")
+            BASE="${DESCRIBED%%-*}"; BASE="${BASE#v}"
+            COMMITS=$(echo "$DESCRIBED" | cut -d- -f2)
+            HASH=$(echo "$DESCRIBED" | cut -d- -f3)
+            if [ "$CHANNEL" = "beta" ]; then
+              VERSION="${BASE}.beta${COMMITS}+${HASH}"
+            else
+              VERSION="${BASE}.dev${COMMITS}+${HASH}"
+            fi
+            IS_RELEASE=false
+          else
+            # Push to main without tag → dev pre-release
+            CHANNEL="beta"
+            DESCRIBED=$(git describe --tags --long --match 'v*' 2>/dev/null || echo "v0.0-0-g$(git rev-parse --short HEAD)")
+            BASE="${DESCRIBED%%-*}"; BASE="${BASE#v}"
+            COMMITS=$(echo "$DESCRIBED" | cut -d- -f2)
+            HASH=$(echo "$DESCRIBED" | cut -d- -f3)
+            VERSION="${BASE}.dev${COMMITS}+${HASH}"
+            IS_RELEASE=false
+          fi
+
+          CODE=$(git rev-list --count HEAD)
+          echo "version=$VERSION"    >> $GITHUB_OUTPUT
+          echo "code=$CODE"          >> $GITHUB_OUTPUT
+          echo "channel=$CHANNEL"    >> $GITHUB_OUTPUT
+          echo "is_release=$IS_RELEASE" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION"       >> $GITHUB_OUTPUT
+          echo "is_prerelease=$( [ "$CHANNEL" = "beta" ] || [ "$IS_RELEASE" = "false" ] && echo true || echo false )" >> $GITHUB_OUTPUT
+          echo "━━━ Version: $VERSION | Channel: $CHANNEL | Code: $CODE ━━━"
+
+      - name: Patch versionName & versionCode
+        run: |
+          sed -i "s/versionCode = [0-9]*/versionCode = ${{ steps.ver.outputs.code }}/" app/build.gradle.kts
+          sed -i 's/versionName = "[^"]*"/versionName = "${{ steps.ver.outputs.version }}"/' app/build.gradle.kts
+          echo "Patched: $(grep -E 'versionCode|versionName' app/build.gradle.kts)"
+
+      - name: Update README badge
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          CHANNEL="${{ steps.ver.outputs.channel }}"
+          if [ "$CHANNEL" = "beta" ]; then
+            COLOR="orange"
+          else
+            COLOR="blueviolet"
+          fi
+          sed -i "s|img.shields.io/badge/Version-[^-]*-[a-z]*|img.shields.io/badge/Version-${VERSION}-${COLOR}|g" README.md
+          # Add/update channel badge
+          if grep -q "Channel-" README.md; then
+            sed -i "s|img.shields.io/badge/Channel-[^-]*-[a-z]*|img.shields.io/badge/Channel-${CHANNEL}-${COLOR}|g" README.md
+          else
+            sed -i "s|img.shields.io/badge/Version-${VERSION}-${COLOR}\" alt=\"version\"/>|img.shields.io/badge/Version-${VERSION}-${COLOR}\" alt=\"version\"/>  <img src=\"https://img.shields.io/badge/Channel-${CHANNEL}-${COLOR}\" alt=\"channel\"/>|" README.md
+          fi
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Decode Keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_BASE64" | base64 --decode > /tmp/key.jks
+
+      - name: Build with Gradle
+        env:
+          SIGN_KEY_STORE_FILE: "/tmp/key.jks"
+          SIGN_KEY_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          SIGN_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          SIGN_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          ONESIGNAL_APP_ID: ${{ secrets.ONESIGNAL_APP_ID }}
+          ONESIGNAL_REST_KEY: ${{ secrets.ONESIGNAL_REST_KEY }}
+        run: ./gradlew bundleRelease
+
+      - name: Install dependencies
+        run: sudo apt-get install wget unzip -y
+
+      - name: Process Artifacts
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          CHANNEL="${{ steps.ver.outputs.channel }}"
+
+          wget -q -O /tmp/bundletool.jar \
+            https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar
+
+          AAB_FILE=$(ls app/build/outputs/bundle/release/*.aab | head -n 1)
+          echo "aabFile=$AAB_FILE" >> $GITHUB_ENV
+
+          java -jar /tmp/bundletool.jar build-apks \
+            --bundle=$AAB_FILE \
+            --output=universal.apks \
+            --mode=universal \
+            --ks=/tmp/key.jks \
+            --ks-pass=pass:$KEYSTORE_PASSWORD \
+            --ks-key-alias=$KEY_ALIAS \
+            --key-pass=pass:$KEY_PASSWORD
+
+          APK_NAME="NowBrief-${VERSION}-${CHANNEL}.apk"
+          unzip -p universal.apks universal.apk > "$APK_NAME"
+          echo "universalApk=$APK_NAME" >> $GITHUB_ENV
+
+      - name: Extract changelog from README
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          CHANNEL="${{ steps.ver.outputs.channel }}"
+          python3 - << PYEOF
+          import re
+          version = "$VERSION"
+          channel = "$CHANNEL"
+          with open("README.md", "r") as f:
+              readme = f.read()
+          # Match version section — strip off .betaXX / .devXX suffixes for lookup
+          base = re.sub(r'\.(beta|dev)\d+.*', '', version)
+          pattern = rf"(### v{re.escape(base)}[^\n]*\n.*?)(?=\n### v|\Z)"
+          match = re.search(pattern, readme, re.DOTALL)
+          notes = match.group(1).strip() if match else f"NowBrief v{version}"
+          channel_badge = "🟠 **Beta**" if channel == "beta" else "🟢 **Stable**"
+          with open("/tmp/release_notes.md", "w") as f:
+              f.write(f"## NowBrief v{version}  {channel_badge}\n\n")
+              f.write(notes + "\n\n---\n\n")
+              if channel == "beta":
+                  f.write("> ⚠️ **Beta release** — may contain bugs. Stable users also receive the latest stable build.\n\n")
+              f.write(f"**Install:** Download `NowBrief-{version}-{channel}.apk` below.\n\n")
+              f.write("**Restricted Settings fix (sideloaded APK):** Open app → Vitals → Connect Health Connect → if blocked, long-press app icon → App Info → ⋮ → Allow restricted settings → authenticate → retry.\n")
+          PYEOF
+
+      - name: Delete existing release/tag (if any)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          RELEASE_ID=$(gh api repos/MukulBolt9/xz/releases/tags/$TAG --jq '.id' 2>/dev/null | tr -d '[:space:]' || true)
+          if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
+            gh api -X DELETE "repos/MukulBolt9/xz/releases/$RELEASE_ID" || true
+          fi
+          gh api -X DELETE "repos/MukulBolt9/xz/git/refs/tags/$TAG" 2>/dev/null || true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: NowBrief ${{ steps.ver.outputs.tag }}
+          prerelease: ${{ steps.ver.outputs.is_prerelease }}
+          generate_release_notes: false
+          body_path: /tmp/release_notes.md
+          files: |
+            ${{ env.aabFile }}
+            ${{ env.universalApk }}
