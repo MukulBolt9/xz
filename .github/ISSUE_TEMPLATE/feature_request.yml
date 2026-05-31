@@ -1,0 +1,68 @@
+name: ✨ Feature Request
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+assignees: [MukulBolt9]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Got an idea? Love it. Tell us about it below.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Feature summary
+      placeholder: e.g. Show battery percentage on Now Bar
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Why do you want this?
+      description: What problem does it solve? What's the use case?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How would you like it to work?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area of the app?
+      multiple: true
+      options:
+        - Now Bar / Live Notification
+        - Vitals Tab
+        - Health Connect
+        - AI Summary (Gemini)
+        - Weather
+        - News
+        - Quotes
+        - Settings / Theming
+        - Offline / Private Mode
+        - CI / Build
+        - Other
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds or alternative approaches you've thought of?
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and this hasn't been requested before
+          required: true
