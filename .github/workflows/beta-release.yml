@@ -1,0 +1,145 @@
+name: Beta Release
+
+on:
+  push:
+    tags:
+      - 'v*-beta*'      # v2.0.7-beta.1, v2.1.0-beta.2, etc.
+      - 'v*-alpha*'     # v2.1.0-alpha.1 also welcome
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve version from tag
+        id: ver
+        run: |
+          RAW_TAG="${GITHUB_REF_NAME}"          # e.g. v2.0.7-beta.1
+          VERSION="${RAW_TAG#v}"               # strip leading v → 2.0.7-beta.1
+          CODE=$(git rev-list --count HEAD)
+          echo "version=$VERSION"   >> $GITHUB_OUTPUT
+          echo "code=$CODE"         >> $GITHUB_OUTPUT
+          echo "tag=$RAW_TAG"       >> $GITHUB_OUTPUT
+          echo "Version: $VERSION  Code: $CODE"
+
+      - name: Patch versionName & versionCode in build.gradle.kts
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          CODE="${{ steps.ver.outputs.code }}"
+          sed -i "s/versionCode = [0-9]*/versionCode = $CODE/" app/build.gradle.kts
+          sed -i "s/versionName = \"[^\"]*\"/versionName = \"$VERSION\"/" app/build.gradle.kts
+          echo "Patched:"
+          grep -E "versionCode|versionName" app/build.gradle.kts
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Decode Keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_BASE64" | base64 --decode > /tmp/key.jks
+
+      - name: Build with Gradle
+        env:
+          SIGN_KEY_STORE_FILE: "/tmp/key.jks"
+          SIGN_KEY_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          SIGN_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          SIGN_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew bundleRelease
+
+      - name: Install dependencies
+        run: sudo apt-get install wget unzip -y
+
+      - name: Process Artifacts
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          wget -q -O /tmp/bundletool.jar \
+            https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar
+
+          BUNDLE_DIR="app/build/outputs/bundle/release"
+          AAB_FILE=$(ls $BUNDLE_DIR/*.aab | head -n 1)
+          echo "aabFile=$AAB_FILE" >> $GITHUB_ENV
+
+          java -jar /tmp/bundletool.jar build-apks \
+            --bundle=$AAB_FILE \
+            --output=universal.apks \
+            --mode=universal \
+            --ks=/tmp/key.jks \
+            --ks-pass=pass:$KEYSTORE_PASSWORD \
+            --ks-key-alias=$KEY_ALIAS \
+            --key-pass=pass:$KEY_PASSWORD
+
+          unzip -p universal.apks universal.apk > "NowBrief-${VERSION}-beta-universal.apk"
+          echo "universalApk=NowBrief-${VERSION}-beta-universal.apk" >> $GITHUB_ENV
+
+      - name: Delete ALL existing releases and tag (if any)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          echo "=== Sweeping all releases for tag $TAG ==="
+
+          # Fetch up to 100 releases and delete every one matching our tag
+          # This catches stale drafts that softprops would otherwise trip over
+          gh api "repos/MukulBolt9/xz/releases?per_page=100" --jq '.[] | select(.tag_name == "'"$TAG"'") | .id' \
+            2>/dev/null | while read -r RID; do
+              [[ "$RID" =~ ^[0-9]+$ ]] || continue
+              echo "  Deleting release id=$RID"
+              gh api -X DELETE "repos/MukulBolt9/xz/releases/$RID" 2>/dev/null && \
+                echo "  Deleted $RID" || echo "  Already gone: $RID"
+            done
+
+          # Belt-and-suspenders: also try the by-tag endpoint
+          RELEASE_ID=$(gh api "repos/MukulBolt9/xz/releases/tags/$TAG" --jq '.id' 2>/dev/null | tr -d '[:space:]' || true)
+          if [[ "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
+            echo "  Deleting release $RELEASE_ID (via tag endpoint)"
+            gh api -X DELETE "repos/MukulBolt9/xz/releases/$RELEASE_ID" 2>/dev/null || true
+          fi
+
+          # Delete the tag ref so softprops recreates it fresh
+          gh api -X DELETE "repos/MukulBolt9/xz/git/refs/tags/$TAG" 2>/dev/null && \
+            echo "Tag ref $TAG deleted" || echo "Tag ref $TAG not found (ok)"
+
+          # Let GitHub's API propagate the deletions
+          sleep 8
+
+      - name: Create Pre-Release on GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: "NowBrief ${{ steps.ver.outputs.tag }} (Beta)"
+          prerelease: true
+          generate_release_notes: false
+          make_latest: false
+          body: |
+            ## NowBrief ${{ steps.ver.outputs.version }} — Beta Build
+
+            > ⚠️ This is a **pre-release** build for beta testers. It may be unstable.
+
+            ### How to get beta updates in-app
+            Go to **Settings → Beta Updates** and toggle it on.
+            The app will pick up this build on next update check.
+
+            ---
+            **Install:** Download `NowBrief-${{ steps.ver.outputs.version }}-beta-universal.apk` below.
+          files: |
+            ${{ env.aabFile }}
+            ${{ env.universalApk }}
