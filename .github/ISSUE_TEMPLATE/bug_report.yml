@@ -1,0 +1,102 @@
+name: 🐛 Bug Report
+description: Something is broken — help us fix it
+labels: ["bug", "needs triage"]
+assignees: [MukulBolt9]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out as much detail as possible.
+
+  - type: input
+    id: version
+    attributes:
+      label: NowBrief Version
+      description: Find it in Settings → About, or in the APK filename
+      placeholder: e.g. 2.0.7
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Device & Android Version
+      placeholder: e.g. Samsung Galaxy S24 Ultra, One UI 6.1 (Android 14)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: channel
+    attributes:
+      label: Build Channel
+      options:
+        - Stable
+        - Beta
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Clear description of the bug
+      placeholder: When I tap X, Y crashes / shows wrong data / doesn't respond...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the app
+        2. Go to Vitals tab
+        3. Tap ...
+        4. See error
+    validations:
+      required: true
+
+  - type: dropdown
+    id: feature
+    attributes:
+      label: Which feature is affected?
+      multiple: true
+      options:
+        - Now Bar / Live Notification
+        - Vitals Tab
+        - Health Connect
+        - Weather Card
+        - News Card
+        - Quotes
+        - Settings
+        - Auto-update
+        - Beta mode
+        - Super Private Mode (llama.cpp)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Screenshots (optional)
+      description: Paste logcat output or attach screenshots
+      render: shell
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and this isn't a duplicate
+          required: true
+        - label: I am using the latest release
+          required: false
