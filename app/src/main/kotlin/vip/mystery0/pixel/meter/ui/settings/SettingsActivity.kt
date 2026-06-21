@@ -1,0 +1,1075 @@
+package com.kakao.taxi.ui.settings
+
+import android.content.Intent
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.RadioButton
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import android.os.Build
+import android.os.Bundle
+import android.provider.Settings
+import android.view.HapticFeedbackConstants
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
+import androidx.browser.customtabs.CustomTabsIntent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsBottomHeight
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.github.skydoves.colorpicker.compose.AlphaSlider
+import com.github.skydoves.colorpicker.compose.AlphaTile
+import com.github.skydoves.colorpicker.compose.BrightnessSlider
+import com.github.skydoves.colorpicker.compose.HsvColorPicker
+import com.github.skydoves.colorpicker.compose.rememberColorPickerController
+import me.zhanghai.compose.preference.ListPreference
+import me.zhanghai.compose.preference.LocalPreferenceTheme
+import me.zhanghai.compose.preference.Preference
+import me.zhanghai.compose.preference.PreferenceCategory
+import me.zhanghai.compose.preference.ProvidePreferenceLocals
+import me.zhanghai.compose.preference.SliderPreference
+import me.zhanghai.compose.preference.SwitchPreference
+import me.zhanghai.compose.preference.TextFieldPreference
+import me.zhanghai.compose.preference.TwoTargetPreference
+import com.kakao.taxi.BuildConfig
+import com.kakao.taxi.R
+import com.kakao.taxi.data.repository.NetworkRepository
+import com.kakao.taxi.ui.theme.PixelPulseTheme
+import java.util.Locale
+
+class SettingsActivity : ComponentActivity() {
+    private val viewModel by viewModels<SettingsViewModel>()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent {
+            val isOledTheme by viewModel.isOledThemeEnabled.collectAsState(initial = false)
+            PixelPulseTheme(isOledTheme = isOledTheme) {
+                SettingsScreen()
+            }
+        }
+    }
+
+    @Composable
+    fun SettingsScreen() {
+        val lifecycle = LocalLifecycleOwner.current.lifecycle
+        DisposableEffect(lifecycle) {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    viewModel.refreshOverlaySettings()
+                }
+            }
+            lifecycle.addObserver(observer)
+            onDispose {
+                lifecycle.removeObserver(observer)
+            }
+        }
+
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text(stringResource(R.string.title_settings)) },
+                    navigationIcon = {
+                        IconButton(onClick = { finish() }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    }
+                )
+            },
+            contentWindowInsets = WindowInsets(0, 0, 0, 0)
+        ) { paddingValues ->
+            ProvidePreferenceLocals {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(paddingValues)
+                ) {
+                    item { GeneralSection(viewModel) }
+                    item { HealthSourceSection(viewModel) }
+                    item { NotificationSection(viewModel) }
+                    item { OverlaySection(viewModel) }
+                    item { BackgroundSection(viewModel) }
+                    item { AboutSection() }
+                    item {
+                        Spacer(modifier = Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun HealthSourceSection(viewModel: SettingsViewModel) {
+    val view = LocalView.current
+    val context = LocalContext.current
+    val mode by viewModel.healthSourceMode.collectAsState(initial = "auto")
+    var showDialog by remember { mutableStateOf(false) }
+    var diagnostics by remember { mutableStateOf<com.kakao.taxi.data.repository.HealthDiagnostics?>(null) }
+    val coroutineScope = rememberCoroutineScope()
+    val hcRepo: com.kakao.taxi.data.repository.HealthConnectRepository =
+        org.koin.java.KoinJavaComponent.get(com.kakao.taxi.data.repository.HealthConnectRepository::class.java)
+    val dataStoreRepo: com.kakao.taxi.data.repository.DataStoreRepository =
+        org.koin.java.KoinJavaComponent.get(com.kakao.taxi.data.repository.DataStoreRepository::class.java)
+    val aggregator = remember { com.kakao.taxi.data.repository.HealthAggregator(context, hcRepo, dataStoreRepo) }
+
+    LaunchedEffect(Unit) { diagnostics = aggregator.diagnostics() }
+
+    val options = listOf(
+        "auto" to "Auto (Recommended)",
+        "health_connect" to "Health Connect",
+        "device_sensors" to "Device Sensors",
+    )
+
+    PreferenceCategory(title = { Text("Health Data Source") })
+
+    Preference(
+        title = { Text("Health source") },
+        summary = { Text(options.firstOrNull { it.first == mode }?.second ?: "Auto (Recommended)") },
+        onClick = {
+            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            showDialog = true
+        }
+    )
+
+    diagnostics?.let { d ->
+        Preference(
+            title = { Text("Active source: ${d.activeSourceLabel}") },
+            summary = {
+                Column {
+                    Text("Health Connect: ${if (d.healthConnectAvailable) "available" else "unavailable"} · permissions: ${if (d.permissionsGranted) "granted" else "not granted"}")
+                    Text("Steps: ${if (d.stepRecordsAvailable) "yes" else "no"} · Sleep: ${if (d.sleepRecordsAvailable) "yes" else "no"} · Heart rate: ${if (d.heartRateRecordsAvailable) "yes" else "no"}")
+                    Text("Samsung Health installed: ${if (d.samsungHealthInstalled) "yes" else "no"} · Google Fit installed: ${if (d.googleFitInstalled) "yes" else "no"}")
+                    d.message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            onClick = {
+                coroutineScope.launch { diagnostics = aggregator.diagnostics() }
+            }
+        )
+    }
+
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+        TextButton(onClick = {
+            try { context.startActivity(com.kakao.taxi.data.repository.HealthAggregator.openHealthConnectIntent()) }
+            catch (_: Exception) {}
+        }) { Text("Open Health Connect") }
+
+        TextButton(onClick = {
+            try { context.startActivity(com.kakao.taxi.data.repository.HealthAggregator.openSamsungHealthIntent()) }
+            catch (_: Exception) {}
+        }) { Text("Open Samsung Health") }
+
+        TextButton(onClick = {
+            try { context.startActivity(com.kakao.taxi.data.repository.HealthAggregator.openGoogleFitIntent()) }
+            catch (_: Exception) {}
+        }) { Text("Open Google Fit") }
+    }
+
+    if (showDialog) {
+        AlertDialog(
+            onDismissRequest = { showDialog = false },
+            title = { Text("Health data source") },
+            text = {
+                Column {
+                    options.forEach { (key, label) ->
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clickable {
+                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                    viewModel.setHealthSourceMode(key)
+                                    showDialog = false
+                                }
+                                .padding(vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(selected = mode == key, onClick = {
+                                viewModel.setHealthSourceMode(key)
+                                showDialog = false
+                            })
+                            Spacer(Modifier.width(8.dp))
+                            Text(label)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDialog = false }) { Text("Close") }
+            }
+        )
+    }
+}
+
+
+@Composable
+fun GeneralSection(viewModel: SettingsViewModel) {
+    val view = LocalView.current
+    val context = LocalContext.current
+    val interval by viewModel.samplingInterval.collectAsState(initial = 1500L)
+    val speedUnit by viewModel.speedUnit.collectAsState(initial = "0")
+    val isAutoStartEnabled by viewModel.isAutoStartServiceEnabled.collectAsState(initial = false)
+    val isOledThemeEnabled by viewModel.isOledThemeEnabled.collectAsState(initial = false)
+    val isBetaModeEnabled by viewModel.isBetaModeEnabled.collectAsState(initial = false)
+    val canEnableAutoStart by viewModel.canEnableAutoStart.collectAsState()
+    val hasOverlayPermission by viewModel.canOverlay.collectAsState()
+    val hasNotificationPermission by viewModel.hasNotificationPermission.collectAsState()
+
+    PreferenceCategory(title = { Text(stringResource(R.string.settings_category_general)) })
+
+    SliderPreference(
+        value = 0F,
+        onValueChange = { },
+        sliderValue = interval.toFloat(),
+        onSliderValueChange = {
+            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            viewModel.setSamplingInterval(it.toLong())
+        },
+        valueRange = 1000f..3000f,
+        valueSteps = 19,
+        title = { Text(stringResource(R.string.settings_sampling_interval)) },
+        summary = { Text(stringResource(R.string.settings_sampling_interval_desc)) },
+        valueText = { Text("${interval}ms") }
+    )
+
+    SpeedUnitPreference(
+        currentValue = speedUnit,
+        onValueChange = { viewModel.setSpeedUnit(it) }
+    )
+
+    SwitchPreference(
+        value = isOledThemeEnabled,
+        onValueChange = { isChecked ->
+            performToggleHaptic(view, isChecked)
+            viewModel.setOledThemeEnabled(isChecked)
+        },
+        title = { Text(stringResource(R.string.settings_oled_theme_title)) },
+        summary = { Text(stringResource(R.string.settings_oled_theme_desc)) }
+    )
+
+    // ── Stealth mode — hide app icon, access via Quick Settings tile ──────
+    val isStealthEnabled by viewModel.isStealthModeEnabled.collectAsState(initial = false)
+    var showStealthDialog by remember { mutableStateOf(false) }
+
+    SwitchPreference(
+        value = isStealthEnabled,
+        onValueChange = { isChecked ->
+            if (isChecked) {
+                showStealthDialog = true
+            } else {
+                performToggleHaptic(view, false)
+                viewModel.setStealthModeEnabled(false)
+                com.kakao.taxi.util.StealthHelper.setIconHidden(context, false)
+            }
+        },
+        title = { Text("Stealth mode") },
+        summary = {
+            Text(
+                if (isStealthEnabled)
+                    "App icon hidden. Add the \"Open NowBrief\" tile to Quick Settings to access the app."
+                else
+                    "Hide the app icon from the home screen & app drawer."
+            )
+        }
+    )
+
+    if (showStealthDialog) {
+        AlertDialog(
+            onDismissRequest = { showStealthDialog = false },
+            title = { Text("Enable stealth mode?") },
+            text = {
+                Text(
+                    "The NowBrief icon will disappear from your home screen and app drawer. " +
+                    "To open the app afterwards, add the \"Open NowBrief\" tile to your " +
+                    "Quick Settings panel (swipe down → edit tiles).\n\n" +
+                    "You can turn this off again from this same Settings screen — " +
+                    "use the Quick Settings tile to get back here."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    performToggleHaptic(view, true)
+                    viewModel.setStealthModeEnabled(true)
+                    com.kakao.taxi.util.StealthHelper.setIconHidden(context, true)
+                    showStealthDialog = false
+                }) { Text("Enable") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showStealthDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+
+    val autoStartSummary = if (canEnableAutoStart) {
+        stringResource(R.string.settings_auto_start_service_desc)
+    } else {
+        stringResource(R.string.settings_auto_start_disabled_reason)
+    }
+
+    SwitchPreference(
+        value = isAutoStartEnabled,
+        onValueChange = { isChecked ->
+            performToggleHaptic(view, isChecked)
+            viewModel.setAutoStartServiceEnabled(isChecked)
+        },
+        enabled = canEnableAutoStart,
+        title = { Text(stringResource(R.string.settings_auto_start_service_title)) },
+        summary = { Text(autoStartSummary) }
+    )
+
+    SwitchPreference(
+        value = isBetaModeEnabled,
+        onValueChange = { isChecked ->
+            performToggleHaptic(view, isChecked)
+            viewModel.setBetaModeEnabled(isChecked)
+        },
+        title = { Text("Beta Updates") },
+        summary = { Text(if (isBetaModeEnabled) "Receiving stable + pre-release builds" else "Receiving stable builds only") }
+    )
+
+    // Permission Indicators
+    val overlayPermissionSummary = if (hasOverlayPermission) {
+        stringResource(R.string.settings_permission_granted)
+    } else {
+        stringResource(R.string.settings_permission_denied)
+    }
+    Preference(
+        title = { Text(stringResource(R.string.settings_permission_overlay)) },
+        summary = { Text(overlayPermissionSummary) },
+        onClick = {
+            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
+            intent.data = "package:${context.packageName}".toUri()
+            context.startActivity(intent)
+        }
+    )
+
+    val notificationPermissionSummary = if (hasNotificationPermission) {
+        stringResource(R.string.settings_permission_granted)
+    } else {
+        stringResource(R.string.settings_permission_denied)
+    }
+    Preference(
+        title = { Text(stringResource(R.string.settings_permission_notification)) },
+        summary = { Text(notificationPermissionSummary) },
+        onClick = {
+            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+            intent.putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+            context.startActivity(intent)
+        }
+    )
+}
+
+@Composable
+fun SpeedUnitPreference(
+    currentValue: String,
+    onValueChange: (String) -> Unit
+) {
+    val view = LocalView.current
+    val selectedUnits = remember(currentValue) {
+        currentValue.split(",").mapNotNull { it.trim().toIntOrNull() }.toSet()
+    }
+
+    var showDialog by remember { mutableStateOf(false) }
+
+    val labelAuto = stringResource(R.string.settings_speed_unit_auto)
+    val units = listOf(
+        0 to labelAuto,
+        1 to "B/s",
+        2 to "KB/s",
+        3 to "MB/s",
+        4 to "GB/s"
+    )
+
+    val summary = if (selectedUnits.isEmpty() || selectedUnits.contains(0)) {
+        labelAuto
+    } else {
+        units.filter { it.first in selectedUnits }.joinToString(", ") { it.second }
+    }
+
+    Preference(
+        title = { Text(stringResource(R.string.settings_speed_unit_title)) },
+        summary = { Text(summary) },
+        onClick = {
+            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            showDialog = true
+        }
+    )
+
+    if (showDialog) {
+        AlertDialog(
+            onDismissRequest = { showDialog = false },
+            title = { Text(stringResource(R.string.settings_speed_unit_title)) },
+            text = {
+                Column {
+                    units.forEach { (value, label) ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                        ) {
+                            Checkbox(
+                                checked = selectedUnits.contains(value),
+                                onCheckedChange = { checked ->
+                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                    val newSet = if (checked) {
+                                        if (value == 0) setOf(0) else (selectedUnits - 0) + value
+                                    } else {
+                                        selectedUnits - value
+                                    }
+                                    onValueChange(newSet.sorted().joinToString(","))
+                                }
+                            )
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.padding(start = 8.dp)
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    showDialog = false
+                }) {
+                    Text(stringResource(android.R.string.ok))
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun BackgroundSection(viewModel: SettingsViewModel) {
+    val view = LocalView.current
+    val context = LocalContext.current
+    val isIgnoringBatteryOptimizations by viewModel.isIgnoringBatteryOptimizations.collectAsState()
+    val isHideFromRecents by viewModel.isHideFromRecents.collectAsState(initial = false)
+
+    PreferenceCategory(title = { Text(stringResource(R.string.settings_category_background)) })
+
+    Preference(
+        title = { Text(stringResource(R.string.settings_ignore_battery_optimizations_title)) },
+        summary = {
+            Text(
+                if (isIgnoringBatteryOptimizations) stringResource(R.string.settings_ignore_battery_optimizations_on)
+                else stringResource(R.string.settings_ignore_battery_optimizations_off)
+            )
+        },
+        onClick = {
+            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+            intent.data = "package:${context.packageName}".toUri()
+            context.startActivity(intent)
+        }
+    )
+
+    SwitchPreference(
+        value = isHideFromRecents,
+        onValueChange = { isChecked ->
+            performToggleHaptic(view, isChecked)
+            viewModel.setHideFromRecents(isChecked)
+        },
+        title = { Text(stringResource(R.string.settings_hide_from_recents_title)) },
+        summary = { Text(stringResource(R.string.settings_hide_from_recents_desc)) }
+    )
+
+    Preference(
+        title = { Text(stringResource(R.string.settings_dont_kill_my_app_title)) },
+        summary = { Text(stringResource(R.string.settings_dont_kill_my_app_desc)) },
+        onClick = {
+            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            val url = "https://dontkillmyapp.com/"
+            val customTabsIntent = CustomTabsIntent.Builder()
+                .setShowTitle(true)
+                .build()
+            customTabsIntent.launchUrl(context, url.toUri())
+        }
+    )
+}
+
+@Composable
+fun OverlaySection(viewModel: SettingsViewModel) {
+    val view = LocalView.current
+    val isServiceRunning by viewModel.isServiceRunning.collectAsState()
+    val canOverlay by viewModel.canOverlay.collectAsState()
+
+    val isEnabled by viewModel.isOverlayEnabled.collectAsState(initial = false)
+    val isLocked by viewModel.isOverlayLocked.collectAsState(initial = false)
+    val isOverlayUseDefaultColors by viewModel.isOverlayUseDefaultColors.collectAsState(initial = false)
+    val bgColor by viewModel.overlayBgColor.collectAsState(initial = 0)
+    val textColor by viewModel.overlayTextColor.collectAsState(initial = 0)
+    val cornerRadius by viewModel.overlayCornerRadius.collectAsState(initial = 8)
+    val textSize by viewModel.overlayTextSize.collectAsState(initial = 10f)
+    val textUp by viewModel.overlayTextUp.collectAsState(initial = "▲ ")
+    val textDown by viewModel.overlayTextDown.collectAsState(initial = "▼ ")
+    val upFirst by viewModel.overlayOrderUpFirst.collectAsState(initial = true)
+
+    PreferenceCategory(title = { Text(stringResource(R.string.settings_category_overlay)) })
+    val isSwitchEnabled = !isServiceRunning || canOverlay
+    val summaryText = if (isSwitchEnabled) {
+        stringResource(R.string.config_enable_overlay_desc)
+    } else {
+        stringResource(R.string.config_overlay_disabled_reason)
+    }
+    SwitchPreference(
+        value = isEnabled,
+        onValueChange = { isChecked ->
+            performToggleHaptic(view, isChecked)
+            viewModel.setOverlayEnabled(isChecked)
+        },
+        enabled = isSwitchEnabled,
+        title = { Text(stringResource(R.string.config_enable_overlay)) },
+        summary = { Text(summaryText) }
+    )
+
+    if (isEnabled) {
+        SwitchPreference(
+            value = isLocked,
+            onValueChange = { isChecked ->
+                performToggleHaptic(view, isChecked)
+                viewModel.setOverlayLocked(isChecked)
+            },
+            title = { Text(stringResource(R.string.settings_lock_overlay)) },
+            summary = { Text(stringResource(R.string.config_lock_overlay_desc)) }
+        )
+        SwitchPreference(
+            value = isOverlayUseDefaultColors,
+            onValueChange = { isChecked ->
+                performToggleHaptic(view, isChecked)
+                viewModel.setOverlayUseDefaultColors(isChecked)
+            },
+            title = { Text(stringResource(R.string.settings_overlay_use_default_colors)) },
+            summary = { Text(stringResource(R.string.settings_overlay_use_default_colors_desc)) }
+        )
+        ColorPreference(
+            title = stringResource(R.string.settings_overlay_bg_color),
+            color = Color(bgColor),
+            enabled = !isOverlayUseDefaultColors,
+            onColorSelected = { viewModel.setOverlayBgColor(it.toArgb()) }
+        )
+        ColorPreference(
+            title = stringResource(R.string.settings_overlay_text_color),
+            color = Color(textColor),
+            enabled = !isOverlayUseDefaultColors,
+            onColorSelected = { viewModel.setOverlayTextColor(it.toArgb()) }
+        )
+        SliderPreference(
+            value = 0F,
+            onValueChange = { },
+            sliderValue = cornerRadius.toFloat(),
+            onSliderValueChange = {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                viewModel.setOverlayCornerRadius(it.toInt())
+            },
+            valueRange = 0f..32f,
+            valueSteps = 32,
+            title = { Text(stringResource(R.string.settings_overlay_corner_radius)) },
+            valueText = { Text("${cornerRadius}dp") }
+        )
+        SliderPreference(
+            value = 0F,
+            onValueChange = { },
+            sliderValue = textSize,
+            onSliderValueChange = {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                viewModel.setOverlayTextSize(it)
+            },
+            valueRange = 8f..24f,
+            title = { Text(stringResource(R.string.settings_overlay_text_size)) },
+            valueText = { Text("${"%.1f".format(Locale.getDefault(), textSize)}sp") }
+        )
+        TextFieldPreference(
+            value = textUp,
+            onValueChange = {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                viewModel.setOverlayTextUp(it)
+            },
+            textToValue = { it },
+            title = { Text(stringResource(R.string.settings_text_prefix_up)) },
+            summary = { Text(stringResource(R.string.settings_text_prefix_up_desc, textUp)) },
+        )
+        TextFieldPreference(
+            value = textDown,
+            onValueChange = {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                viewModel.setOverlayTextDown(it)
+            },
+            textToValue = { it },
+            title = { Text(stringResource(R.string.settings_text_prefix_down)) },
+            summary = { Text(stringResource(R.string.settings_text_prefix_down_desc, textDown)) },
+        )
+        SwitchPreference(
+            value = upFirst,
+            onValueChange = { isChecked ->
+                performToggleHaptic(view, isChecked)
+                viewModel.setOverlayOrderUpFirst(isChecked)
+            },
+            title = { Text(stringResource(R.string.settings_show_up_first)) },
+            summary = { Text(stringResource(R.string.settings_show_up_first_desc)) }
+        )
+    }
+}
+
+@Composable
+fun NotificationSection(viewModel: SettingsViewModel) {
+    val view = LocalView.current
+    val isEnabled by viewModel.isNotificationEnabled.collectAsState(initial = true)
+    val isLiveUpdateEnabled by viewModel.isLiveUpdateEnabled.collectAsState(initial = false)
+    val isShowOnLockscreenEnabled by viewModel.isShowOnLockscreenEnabled.collectAsState(initial = false)
+    val textUp by viewModel.notificationTextUp.collectAsState(initial = "▲ ")
+    val textDown by viewModel.notificationTextDown.collectAsState(initial = "▼ ")
+    val upFirst by viewModel.notificationOrderUpFirst.collectAsState(initial = false)
+    val displayMode by viewModel.notificationDisplayMode.collectAsState(initial = 0)
+    val textSize by viewModel.notificationTextSize.collectAsState(initial = 0.60f)
+    val unitSize by viewModel.notificationUnitSize.collectAsState(initial = 0.45f)
+    val isCompactSpeedTextEnabled by viewModel.isCompactSpeedTextEnabled.collectAsState(initial = true)
+    val isBlankNotificationEnabled by viewModel.isBlankNotificationEnabled.collectAsState(initial = false)
+    val isTransparentIconEnabled by viewModel.isNotificationTransparentIconEnabled.collectAsState(initial = false)
+
+    PreferenceCategory(title = { Text(stringResource(R.string.settings_category_notification)) })
+    SwitchPreference(
+        value = isEnabled,
+        onValueChange = { isChecked ->
+            performToggleHaptic(view, isChecked)
+            viewModel.setNotificationEnabled(isChecked)
+        },
+        title = { Text(stringResource(R.string.config_enable_notification)) },
+        summary = { Text(stringResource(R.string.config_enable_notification_desc)) }
+    )
+
+    if (isEnabled) {
+        SwitchPreference(
+            value = isLiveUpdateEnabled,
+            onValueChange = { isChecked ->
+                performToggleHaptic(view, isChecked)
+                viewModel.setLiveUpdateEnabled(isChecked)
+            },
+            enabled = !isBlankNotificationEnabled,
+            title = { Text(stringResource(R.string.config_enable_live_update)) },
+            summary = { Text(stringResource(R.string.config_enable_live_update_desc)) }
+        )
+        SwitchPreference(
+            value = isShowOnLockscreenEnabled,
+            onValueChange = { isChecked ->
+                performToggleHaptic(view, isChecked)
+                viewModel.setShowOnLockscreenEnabled(isChecked)
+            },
+            title = { Text(stringResource(R.string.settings_show_on_lockscreen_title)) },
+            summary = { Text(stringResource(R.string.settings_show_on_lockscreen_desc)) }
+        )
+        SwitchPreference(
+            value = isCompactSpeedTextEnabled,
+            onValueChange = { isChecked ->
+                performToggleHaptic(view, isChecked)
+                viewModel.setCompactSpeedTextEnabled(isChecked)
+            },
+            title = { Text(stringResource(R.string.settings_compact_speed_text_title)) },
+            summary = { Text(stringResource(R.string.settings_compact_speed_text_desc)) }
+        )
+        SwitchPreference(
+            value = isBlankNotificationEnabled,
+            onValueChange = { isChecked ->
+                performToggleHaptic(view, isChecked)
+                viewModel.setBlankNotificationEnabled(isChecked)
+            },
+            enabled = !isLiveUpdateEnabled,
+            title = { Text(stringResource(R.string.settings_blank_notification_title)) },
+            summary = { Text(stringResource(R.string.settings_blank_notification_desc)) }
+        )
+        TextFieldPreference(
+            value = textUp,
+            onValueChange = {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                viewModel.setNotificationTextUp(it)
+            },
+            textToValue = { it },
+            title = { Text(stringResource(R.string.settings_text_prefix_up)) },
+            summary = { Text(stringResource(R.string.settings_text_prefix_up_desc, textUp)) },
+        )
+        TextFieldPreference(
+            value = textDown,
+            onValueChange = {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                viewModel.setNotificationTextDown(it)
+            },
+            textToValue = { it },
+            title = { Text(stringResource(R.string.settings_text_prefix_down)) },
+            summary = { Text(stringResource(R.string.settings_text_prefix_down_desc, textDown)) },
+        )
+        SwitchPreference(
+            value = upFirst,
+            onValueChange = { isChecked ->
+                performToggleHaptic(view, isChecked)
+                viewModel.setNotificationOrderUpFirst(isChecked)
+            },
+            title = { Text(stringResource(R.string.settings_show_up_first)) },
+            summary = { Text(stringResource(R.string.settings_show_up_first_desc)) }
+        )
+
+        val labelTotal = stringResource(R.string.settings_display_mode_total)
+        val labelUpload = stringResource(R.string.settings_display_mode_upload)
+        val labelDownload = stringResource(R.string.settings_display_mode_download)
+
+        val displayModeLabel = when (displayMode) {
+            1 -> labelUpload
+            2 -> labelDownload
+            else -> labelTotal
+        }
+        ListPreference(
+            value = displayModeLabel,
+            onValueChange = {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                val mode = when (it) {
+                    labelUpload -> 1
+                    labelDownload -> 2
+                    else -> 0
+                }
+                viewModel.setNotificationDisplayMode(mode)
+            },
+            title = { Text(stringResource(R.string.settings_notification_display_mode)) },
+            values = listOf(
+                labelTotal,
+                labelUpload,
+                labelDownload
+            ),
+            summary = { Text(displayModeLabel) }
+        )
+
+        SliderPreference(
+            enabled = !isLiveUpdateEnabled,
+            value = 0F,
+            onValueChange = { },
+            sliderValue = textSize,
+            onSliderValueChange = {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                viewModel.setNotificationTextSize(it)
+            },
+            valueRange = 0.1f..1.0f,
+            title = { Text(stringResource(R.string.settings_notification_text_size)) },
+            valueText = { Text("%.2f".format(textSize)) }
+        )
+
+        SliderPreference(
+            enabled = !isLiveUpdateEnabled,
+            value = 0F,
+            onValueChange = { },
+            sliderValue = unitSize,
+            onSliderValueChange = {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                viewModel.setNotificationUnitSize(it)
+            },
+            valueRange = 0.1f..1.0f,
+            title = { Text(stringResource(R.string.settings_notification_unit_size)) },
+            valueText = { Text("%.2f".format(unitSize)) }
+        )
+
+        // Threshold Settings
+        val threshold by viewModel.notificationThreshold.collectAsState(initial = 0L)
+        val lowTrafficMode by viewModel.notificationLowTrafficMode.collectAsState(initial = 0)
+
+        SliderPreference(
+            value = 0F,
+            onValueChange = { },
+            sliderValue = threshold.toFloat() / 1024,
+            onSliderValueChange = {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                viewModel.setNotificationThreshold((it * 1024).toLong())
+            },
+            valueRange = 0f..1024f, // 0KB to 1024KB (1MB)
+            valueSteps = 20, // 50KB steps roughly
+            title = { Text(stringResource(R.string.settings_notification_threshold)) },
+            summary = {
+                if (threshold == 0L) {
+                    Text(stringResource(R.string.settings_notification_threshold_disabled))
+                } else {
+                    val thresholdStr =
+                        NetworkRepository.formatSpeedLine(
+                            threshold
+                        )
+                    Text(
+                        stringResource(
+                            R.string.settings_notification_threshold_desc,
+                            thresholdStr
+                        )
+                    )
+                }
+            },
+            valueText = {
+                Text(
+                    NetworkRepository.formatSpeedLine(
+                        threshold
+                    )
+                )
+            }
+        )
+
+        TextFieldPreference(
+            value = (threshold / 1024).toString(),
+            onValueChange = {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                val kb = it.toLongOrNull()
+                if (kb != null && kb >= 0) {
+                    viewModel.setNotificationThreshold(kb * 1024)
+                }
+            },
+            title = { Text(stringResource(R.string.settings_notification_threshold_input_title)) },
+            summary = { Text(stringResource(R.string.settings_notification_threshold_input_summary)) },
+            textToValue = { it },
+        )
+
+        val labelStatic = stringResource(R.string.settings_notification_low_traffic_mode_static)
+        val labelDynamic = stringResource(R.string.settings_notification_low_traffic_mode_dynamic)
+        val lowTrafficModeLabel = when (lowTrafficMode) {
+            1 -> labelDynamic
+            else -> labelStatic
+        }
+
+        ListPreference(
+            value = lowTrafficModeLabel,
+            onValueChange = {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                val mode = when (it) {
+                    labelDynamic -> 1
+                    else -> 0
+                }
+                viewModel.setNotificationLowTrafficMode(mode)
+            },
+            title = { Text(stringResource(R.string.settings_notification_low_traffic_mode)) },
+            values = listOf(
+                labelStatic,
+                labelDynamic
+            ),
+            summary = {
+                Column {
+                    Text(lowTrafficModeLabel)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = stringResource(R.string.settings_notification_low_traffic_mode_explanation),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        )
+
+        // Notification Color Settings
+        val useCustomColor by viewModel.notificationUseCustomColor.collectAsState(initial = false)
+        val notificationColor by viewModel.notificationColor.collectAsState(initial = 0)
+
+        SwitchPreference(
+            value = isTransparentIconEnabled,
+            onValueChange = { isChecked ->
+                performToggleHaptic(view, isChecked)
+                viewModel.setNotificationTransparentIconEnabled(isChecked)
+            },
+            enabled = !useCustomColor,
+            title = { Text(stringResource(R.string.settings_notification_transparent_icon_title)) },
+            summary = { Text(stringResource(R.string.settings_notification_transparent_icon_desc)) }
+        )
+
+        SwitchPreference(
+            value = useCustomColor,
+            onValueChange = { isChecked ->
+                performToggleHaptic(view, isChecked)
+                viewModel.setNotificationUseCustomColor(isChecked)
+            },
+            enabled = !isTransparentIconEnabled,
+            title = { Text(stringResource(R.string.settings_notification_use_custom_color_title)) },
+            summary = { Text(stringResource(R.string.settings_notification_use_custom_color_desc)) }
+        )
+
+        ColorPreference(
+            title = stringResource(R.string.settings_notification_color_title),
+            color = Color(notificationColor),
+            enabled = useCustomColor && !isTransparentIconEnabled,
+            showAlpha = false,
+            onColorSelected = { viewModel.setNotificationColor(it.toArgb()) }
+        )
+    }
+}
+
+@Composable
+fun AboutSection() {
+    val view = LocalView.current
+    val uriHandler = LocalUriHandler.current
+    PreferenceCategory(title = { Text(stringResource(R.string.settings_category_about)) })
+    Preference(
+        title = { Text(stringResource(R.string.settings_app_version)) },
+        summary = { Text(BuildConfig.VERSION_NAME) }
+    )
+    Preference(
+        title = { Text(stringResource(R.string.settings_github)) },
+        summary = { Text("github.com/MukulBolt9/xz/releases") },
+        onClick = {
+            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            uriHandler.openUri("https://github.com/MukulBolt9/xz/releases/")
+        }
+    )
+}
+
+@Composable
+fun ColorPreference(
+    title: String,
+    color: Color,
+    enabled: Boolean = true,
+    showAlpha: Boolean = true,
+    onColorSelected: (Color) -> Unit
+) {
+    val view = LocalView.current
+    var showDialog by remember { mutableStateOf(false) }
+
+    val theme = LocalPreferenceTheme.current
+
+    TwoTargetPreference(
+        title = { Text(title) },
+        enabled = enabled,
+        secondTarget = {
+            Box(
+                modifier = Modifier
+                    .padding(horizontal = theme.horizontalSpacing)
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .background(color)
+            )
+        },
+        onClick = {
+            if (enabled) {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                showDialog = true
+            }
+        }
+    )
+    if (showDialog) {
+        val controller = rememberColorPickerController()
+        var selectedColor by remember { mutableStateOf(color) }
+
+        AlertDialog(
+            onDismissRequest = { showDialog = false },
+            title = { Text(stringResource(R.string.color_picker_title)) },
+            text = {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    HsvColorPicker(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(200.dp),
+                        controller = controller,
+                        initialColor = color,
+                        onColorChanged = { envelope ->
+                            selectedColor = envelope.color
+                        }
+                    )
+                    if (showAlpha) {
+                        AlphaSlider(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(36.dp),
+                            controller = controller,
+                        )
+                    }
+                    BrightnessSlider(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(36.dp),
+                        controller = controller,
+                    )
+                    if (showAlpha) {
+                        AlphaTile(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(36.dp)
+                                .clip(MaterialTheme.shapes.medium),
+                            controller = controller
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    onColorSelected(selectedColor)
+                    showDialog = false
+                }) {
+                    Text(stringResource(android.R.string.ok))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    showDialog = false
+                }) {
+                    Text(stringResource(android.R.string.cancel))
+                }
+            }
+        )
+    }
+}
+
+/**
+ * Helper function to perform toggle haptics with API 34+ check.
+ */
+private fun performToggleHaptic(view: android.view.View, isChecked: Boolean) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        view.performHapticFeedback(
+            if (isChecked) HapticFeedbackConstants.TOGGLE_ON 
+            else HapticFeedbackConstants.TOGGLE_OFF
+        )
+    } else {
+        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+    }
+}
