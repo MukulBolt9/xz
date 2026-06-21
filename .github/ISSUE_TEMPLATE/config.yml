@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📦 Latest Stable Release
+    url: https://github.com/MukulBolt9/xz/releases/latest
+    about: Download the latest stable APK
+  - name: 🧪 Beta Releases
+    url: https://github.com/MukulBolt9/xz/releases?q=beta&expanded=true
+    about: Download the latest beta APK
+  - name: 💬 General Discussion
+    url: https://github.com/MukulBolt9/xz/discussions
+    about: Ask questions, share ideas, show off your setup
